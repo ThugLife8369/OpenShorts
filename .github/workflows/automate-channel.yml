@@ -27,11 +27,11 @@ jobs:
       - name: Execute Pipeline via Cloud Runner
         run: |
           if [ -f "main.py" ]; then
-            python main.py --url "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --acknowledged
+            python main.py -u "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
           elif [ -f "OpenShorts/main.py" ]; then
-            python OpenShorts/main.py --url "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --acknowledged
+            python OpenShorts/main.py -u "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
           else
-            python main.py --url "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --acknowledged
+            python main.py -u "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
           fi
         working-directory: .
         env:
