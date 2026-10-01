@@ -1,0 +1,27 @@
+pipeline_name: "processed_food_scanner_global_engine"
+target_duration_seconds: 45
+target_platforms:
+  - tiktok
+  - instagram_reels
+  - youtube_shorts
+
+stages:
+  - name: research
+    action: "Extract top hidden food additive myths, emulsifiers, and UPF data in Indian markets"
+    provider: "gemini-3.1-flash-lite"
+  
+  - name: proposal_and_budget
+    action: "Generate high-tension crime scene hooks and calculate render cost (<$0.50)"
+    approval_gate: false # Fully automated for CI/CD cloud runners
+
+  - name: script_generation
+    action: "Write 60-word script with bracketed visual re-engagement cues every 3s"
+    output_format: "structured_json"
+
+  - name: asset_collection
+    action: "Retrieve matching B-roll via Open Archives / Pexels or fallback generation"
+    fallback_strategy: "free_archival_stock"
+
+  - name: composition_and_storage
+    action: "Render vertical video with word-level kinetic captions and push directly to S3"
+    destination: "s3://openshorts-renders-thuglife"
