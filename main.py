@@ -997,3 +997,49 @@ def _run_worker_loop(i, clip, input_video, video_title, output_dir, output_forma
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="AutoCrop-Vertical with Viral Clip Detection.")
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument('-i', '--input', type=str, help="Path to the input video file.")
+    input_group.add_argument('-u', '--url', type=str, help="YouTube URL to download and process.")
+    parser.add_argument('-o', '--output', type=str, help="Output directory or file.")
+    parser.add_argument('--format', type=str, default="auto", choices=["auto", "vertical", "horizontal", "square"])
+    args = parser.parse_args()
+
+    output_dir = args.output if (args.output and os.path.isdir(args.output)) else "."
+    
+    if args.url:
+        input_video, video_title = download_youtube_video(args.url, output_dir)
+    else:
+        input_video = args.input
+        video_title = os.path.splitext(os.path.basename(input_video))[0]
+
+    print(f"Pipeline ready for processing: {video_title} at {input_video}")
+
+    # 1. Transcribe video
+    print("🎙️ Transcribing video...")
+    transcript = gemini_worker.transcribe_video(input_video)
+    if not transcript or not transcript.get('segments'):
+        print("❌ Transcription failed or empty.")
+        sys.exit(1)
+
+    # 2. Select viral clips via Gemini AI
+    print("🤖 Selecting viral moments using Gemini...")
+    duration = transcript.get('duration', 60.0)
+    clips = gemini_worker.get_viral_clips(transcript, duration)
+    if not clips:
+        print("⚠️ No clips returned by Gemini. Falling back to default scene windows.")
+        clips = [{"start": 0.0, "end": min(duration, 30.0), "viral_hook_text": "Watch this! 🤯"}]
+
+    # 3. Process each clip through the worker loop (cuts, reframes, captions, hooks, and uploads to S3)
+    print(f"🚀 Processing {len(clips)} extracted clips...")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(_run_worker_loop, i, clip, input_video, video_title, output_dir, args.format, transcript)
+            for i, clip in enumerate(clips)
+        ]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                print(f"❌ Error in worker loop: {e}")
+
+    print("🏁 Pipeline execution complete!")
