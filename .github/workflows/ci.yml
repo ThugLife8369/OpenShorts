@@ -13,6 +13,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Set up FFmpeg
+        uses: FedericoCarboni/setup-ffmpeg@v3
       # Everything the collected tests import at module level, WITHOUT the
       # heavy ML stack (torch/ultralytics/mediapipe/faster-whisper) — the
       # pipeline modules import those lazily behind their feature gates, and
