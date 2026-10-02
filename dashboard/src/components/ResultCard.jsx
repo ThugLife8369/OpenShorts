@@ -36,7 +36,7 @@ function formatDuration(clip) {
     return `${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(secs % 60).padStart(2, '0')}`;
 }
 
-export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null }) {
+export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null }) {
     const [showModal, setShowModal] = useState(false);
     // The "why" line is clamped to two lines so cards in a row stay level;
     // when it overflows, a hover (desktop) or tap (touch) shows the whole
@@ -464,6 +464,10 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     effect: options.effect || 'none',
                     base_opacity: options.baseOpacity ?? 1.0,
                     uppercase: options.uppercase || false,
+                    reveal: options.reveal || false,
+                    shadow: options.shadow || 0,
+                    max_chars: options.maxChars ?? null,
+                    max_duration: options.maxDuration ?? null,
                     input_filename: serverVideoFile,
                     // Edited caption text (clip-relative ms); null = server
                     // regenerates from the transcript as before.
@@ -980,7 +984,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                             e.preventDefault();
                             // Free clips are watermarked — surface the upsell once
                             // before the first download, then get out of the way.
-                            if (plan === 'free' && !watermarkNoticeDismissed()) {
+                            if (plan === 'free' && !watermarkNoticeDismissed(jobId)) {
                                 setShowWatermarkModal(true);
                                 return;
                             }
@@ -1199,6 +1203,9 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
 
             {showWatermarkModal && (
                 <WatermarkModal
+                    source="download"
+                    jobId={jobId}
+                    onUpgrade={onUpgrade}
                     onClose={() => setShowWatermarkModal(false)}
                     onContinue={downloadClip}
                 />
