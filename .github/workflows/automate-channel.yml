@@ -66,6 +66,4 @@ jobs:
         with:
           name: generated-short-clips
           path: |
-            *_clip_*.mp4
-            subtitled_*.mp4
-            hooked_*.mp4
+            *.mp4
