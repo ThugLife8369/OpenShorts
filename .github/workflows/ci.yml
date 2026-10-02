@@ -13,8 +13,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Set up FFmpeg
-        uses: FedericoCarboni/setup-ffmpeg@v3
+      - name: Install FFmpeg natively
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
       - name: Install test dependencies
         run: >
           pip install pytest pillow httpx pydantic sqlalchemy greenlet numpy
@@ -30,8 +32,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Set up FFmpeg
-        uses: FedericoCarboni/setup-ffmpeg@v3
+      - name: Install FFmpeg natively
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
