@@ -55,3 +55,17 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
           AWS_REGION: 'ap-south-2'
+
+      - name: Inspect Runner Disk Files
+        run: |
+          echo "Listing files in workspace directory:"
+          ls -la
+
+      - name: Upload Generated Clips as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-short-clips
+          path: |
+            *_clip_*.mp4
+            subtitled_*.mp4
+            hooked_*.mp4
