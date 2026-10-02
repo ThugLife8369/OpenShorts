@@ -1,6 +1,6 @@
 """
 OpenShorts Main Pipeline Runner
-Complete, fully integrated version with robust FFmpeg presence check, 
+Complete, fully integrated version with robust FFmpeg check, 
 flexible yt-dlp format handling, and full test-suite compliance.
 """
 
@@ -922,6 +922,48 @@ def process_video_to_vertical(input_video, final_output_video, aspect_ratio=ASPE
             os.remove(leftover)
 
     return True
+
+
+def _run_worker_loop(i, clip, input_video, video_title, output_dir, output_format, transcript):
+    start = clip['start']
+    end = clip['end']
+    clip_filename = f"{video_title}_clip_{i+1}.mp4"
+    clip_temp_path = os.path.join(output_dir, f"temp_{clip_filename}")
+    clip_final_path = os.path.join(output_dir, clip_filename)
+
+    try:
+        cut_clip(input_video, clip_temp_path, start, end, i + 1)
+        success = render_clip(clip_temp_path, clip_final_path, output_format)
+        deliver_path = clip_final_path
+        
+        import layout_ranges as _layouts
+        clip['layout_ranges'] = _layouts.read(clip_final_path)
+        if success and hook_grounding.wanted(clip['layout_ranges'], end - start):
+            hook_grounding.reground(clip_final_path, clip, transcript, start, end)
+            
+        captioned = None
+        split_ranges = _layouts.split_ranges(clip['layout_ranges'])
+        if success and os.environ.get("AUTO_HOOK") == "1":
+            plan = None
+            if (clip.get('viral_hook_text') or '').strip():
+                plan = auto_caption_clip(clip_final_path, transcript, start, end,
+                                         split_ranges=split_ranges, plan_only=True)
+            hooked = auto_hook_clip(clip_final_path, clip, captions=plan)
+            if hooked:
+                deliver_path, clip['auto_hook'] = hooked
+                captioned = clip['auto_hook'].pop("_captioned", None)
+                
+        if success:
+            if not captioned:
+                captioned = auto_caption_clip(
+                    deliver_path, transcript, start, end,
+                    split_ranges=split_ranges)
+            served = captioned or deliver_path
+            print(f"CLIP_READY {i} {os.path.basename(served)}")
+        return success
+    finally:
+        if os.path.exists(clip_temp_path):
+            os.remove(clip_temp_path)
 
 
 if __name__ == '__main__':
