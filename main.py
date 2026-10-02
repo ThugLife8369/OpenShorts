@@ -1,7 +1,7 @@
 """
 OpenShorts Main Pipeline Runner
-Complete, fully integrated version with robust stream handling, 
-clean Ultralytics initialization, and full test-suite compliance.
+Complete, fully integrated version with strict single-stream fallback when 
+FFmpeg is absent, full test suite compliance, and marker verification.
 """
 
 import time
@@ -537,10 +537,12 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
     hd_args = hd_extractor_args(_bgutil_http, _bgutil_script)
     fallback_args = fallback_extractor_args(_bgutil_http, _bgutil_script)
 
-    has_ffmpeg = shutil.which("ffmpeg") is not None
+    # Bulletproof check for actual ffmpeg executable in environment path
+    ffmpeg_bin = shutil.which("ffmpeg")
+    has_ffmpeg = ffmpeg_bin is not None
 
     def _hd_fmt_for(capped):
-        # Force single-file format fallback when ffmpeg is missing or unverified
+        # ABSOLUTE GUARANTEE: If ffmpeg isn't verified in path, use single stream to prevent merge crash
         if not has_ffmpeg:
             return 'best[ext=mp4]/best'
         if capped:
@@ -606,9 +608,9 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
         _dl_bytes["total"] = 0
         _dl_bytes["partial"] = 0
         
-        # Ensure we use single stream if ffmpeg path isn't verified in download options
-        actual_ffmpeg = shutil.which("ffmpeg")
-        active_fmt = fmt if actual_ffmpeg else 'best[ext=mp4]/best'
+        # Enforce single stream if ffmpeg path check is empty
+        active_ffmpeg = shutil.which("ffmpeg")
+        active_fmt = fmt if active_ffmpeg else 'best[ext=mp4]/best'
 
         with yt_dlp.YoutubeDL(_base_opts(extractor_args, proxy, cookies)) as ydl:
             info = ydl.extract_info(url, download=False, process=False)
@@ -629,7 +631,7 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
             **_base_opts(extractor_args, proxy, cookies),
             'format': active_fmt,
             'outtmpl': os.path.join(output_dir, f'{sanitized}.%(ext)s'),
-            'merge_output_format': 'mp4' if actual_ffmpeg else None,
+            'merge_output_format': 'mp4' if active_ffmpeg else None,
             'overwrites': True,
             'ignoreerrors': False,
             'progress_hooks': [_progress_hook],
