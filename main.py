@@ -954,11 +954,11 @@ def _run_worker_loop(i, clip, input_video, video_title, output_dir, output_forma
                 captioned = clip['auto_hook'].pop("_captioned", None)
                 
         if success:
-            if not captioned:
-                captioned = auto_caption_clip(
-                    deliver_path, transcript, start, end,
-                    split_ranges=split_ranges)
+            captioned = auto_caption_clip(
+                deliver_path, transcript, start, end,
+                split_ranges=split_ranges)
             served = captioned or deliver_path
+            served = mark_delivery(served)
             print(f"CLIP_READY {i} {os.path.basename(served)}")
         return success
     finally:
