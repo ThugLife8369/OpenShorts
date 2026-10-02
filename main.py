@@ -719,12 +719,8 @@ def upload_to_s3(file_path, bucket_name=None):
         print("⚠️ AWS_S3_BUCKET not configured. Skipping S3 upload.")
         return False
     try:
-        s3 = boto3.client(
-            's3',
-            aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
-            region_name=os.environ.get("AWS_REGION", "ap-south-2")
-        )
+        # boto3 automatically loads AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_REGION from environment
+        s3 = boto3.client('s3', region_name=os.environ.get("AWS_REGION", "ap-south-2"))
         file_name = os.path.basename(file_path)
         s3.upload_file(file_path, bucket, file_name)
         print(f"☁️ Successfully uploaded {file_name} to S3 bucket '{bucket}'.")
