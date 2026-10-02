@@ -1,7 +1,8 @@
 """
 OpenShorts Main Pipeline Runner
-Complete, fully integrated version with Node.js runtime binding for yt-dlp,
-strict single-stream fallback, and full test suite compliance.
+Complete, fully integrated version with automated AWS S3 uploading, 
+Node.js runtime binding for yt-dlp, strict single-stream fallback, 
+and full test suite compliance.
 """
 
 import time
@@ -25,6 +26,7 @@ import numpy as np
 from tqdm import tqdm
 import yt_dlp
 import mediapipe as mp
+import boto3
 from google import genai
 from google.genai import types as genai_types
 
@@ -558,7 +560,8 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
             'nocheckcertificate': True, 'cachedir': False,
             'noplaylist': True,
             'extractor_args': extractor_args,
-            'js_runtimes': {'node': {}},  # Explicitly bind Node.js runtime for YouTube JS challenges
+            'js_runtimes': {'node': {}},
+            'remote_components': {'ejs': 'github'},
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             },
@@ -707,6 +710,28 @@ def finalize_clip_passthrough(input_video, final_output_video):
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1800)
     return True
+
+
+def upload_to_s3(file_path, bucket_name=None):
+    """Automatically upload finalized video clips to AWS S3 bucket."""
+    bucket = bucket_name or os.environ.get("AWS_S3_BUCKET")
+    if not bucket:
+        print("⚠️ AWS_S3_BUCKET not configured. Skipping S3 upload.")
+        return False
+    try:
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+            region_name=os.environ.get("AWS_REGION", "ap-south-2")
+        )
+        file_name = os.path.basename(file_path)
+        s3.upload_file(file_path, bucket, file_name)
+        print(f"☁️ Successfully uploaded {file_name} to S3 bucket '{bucket}'.")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to upload {file_path} to S3: {e}")
+        return False
 
 
 def auto_caption_clip(clip_path, transcript, clip_start, clip_end, split_ranges=None,
@@ -964,6 +989,10 @@ def _run_worker_loop(i, clip, input_video, video_title, output_dir, output_forma
                 split_ranges=split_ranges)
             served = captioned or deliver_path
             served = mark_delivery(served)
+            
+            # --- AUTO UPLOAD TO S3 ---
+            upload_to_s3(served)
+            
             print(f"CLIP_READY {i} {os.path.basename(served)}")
         return success
     finally:
