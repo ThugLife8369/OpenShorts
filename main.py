@@ -997,4 +997,3 @@ def _run_worker_loop(i, clip, input_video, video_title, output_dir, output_forma
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="AutoCrop-Vertical with Viral Clip Detection.")
----
