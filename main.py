@@ -1,7 +1,7 @@
 """
 OpenShorts Main Pipeline Runner
-Complete, fully integrated version with strict single-stream fallback when 
-FFmpeg is absent, full test suite compliance, and marker verification.
+Complete, fully integrated version with robust yt-dlp client args,
+format fallbacks, test suite compliance, and marker verification.
 """
 
 import time
@@ -540,9 +540,9 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
     has_ffmpeg = shutil.which("ffmpeg") is not None
 
     def _hd_fmt_for(capped):
-        # Strict single-stream format selection when ffmpeg is missing
+        # Ultra-resilient format selection: fallback to any available single/muxed stream
         if not has_ffmpeg:
-            return 'best[ext=mp4]/best'
+            return 'best/bestvideo+bestaudio/best'
         if capped:
             return ('bestvideo[vcodec^=avc1][height<=720][ext=mp4]+bestaudio[ext=m4a]/'
                     'bestvideo[vcodec^=avc1][height<=720]+bestaudio/'
