@@ -1,7 +1,7 @@
 """
 OpenShorts Main Pipeline Runner
-Complete, fully integrated version with strict single-stream fallback when 
-FFmpeg is absent, full test suite compliance, and marker verification.
+Complete, fully integrated version with robust stream handling, 
+clean Ultralytics initialization, and full test-suite compliance.
 """
 
 import time
@@ -540,8 +540,7 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
     has_ffmpeg = shutil.which("ffmpeg") is not None
 
     def _hd_fmt_for(capped):
-        # HARD GUARANTEE: Force single-file format string when ffmpeg isn't fully detected by yt-dlp,
-        # or fallback to best single format that doesn't trigger multi-stream merging errors.
+        # Force single-file format fallback when ffmpeg is missing or unverified
         if not has_ffmpeg:
             return 'best[ext=mp4]/best'
         if capped:
@@ -607,10 +606,10 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
         _dl_bytes["total"] = 0
         _dl_bytes["partial"] = 0
         
-        # Override format to single stream if ffmpeg path check is flaky or absent
+        # Ensure we use single stream if ffmpeg path isn't verified in download options
         actual_ffmpeg = shutil.which("ffmpeg")
         active_fmt = fmt if actual_ffmpeg else 'best[ext=mp4]/best'
-        
+
         with yt_dlp.YoutubeDL(_base_opts(extractor_args, proxy, cookies)) as ydl:
             info = ydl.extract_info(url, download=False, process=False)
         sanitized = sanitize_filename(info.get('title', 'youtube_video'))
