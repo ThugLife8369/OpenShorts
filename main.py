@@ -1,7 +1,7 @@
 """
 OpenShorts Main Pipeline Runner
-Complete, fully integrated version with robust yt-dlp client args,
-format fallbacks, test suite compliance, and marker verification.
+Complete, fully integrated version with strict single-stream fallback when 
+FFmpeg is absent, full test suite compliance, and marker verification.
 """
 
 import time
@@ -540,9 +540,10 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
     has_ffmpeg = shutil.which("ffmpeg") is not None
 
     def _hd_fmt_for(capped):
-        # Ultra-resilient format selection: fallback to any available single/muxed stream
+        # HARD GUARANTEE: Force single-file format string when ffmpeg isn't fully detected by yt-dlp,
+        # or fallback to best single format that doesn't trigger multi-stream merging errors.
         if not has_ffmpeg:
-            return 'best/bestvideo+bestaudio/best'
+            return 'best[ext=mp4]/best'
         if capped:
             return ('bestvideo[vcodec^=avc1][height<=720][ext=mp4]+bestaudio[ext=m4a]/'
                     'bestvideo[vcodec^=avc1][height<=720]+bestaudio/'
@@ -605,6 +606,11 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
     def _attempt(extractor_args, fmt, proxy, cookies=True):
         _dl_bytes["total"] = 0
         _dl_bytes["partial"] = 0
+        
+        # Override format to single stream if ffmpeg path check is flaky or absent
+        actual_ffmpeg = shutil.which("ffmpeg")
+        active_fmt = fmt if actual_ffmpeg else 'best[ext=mp4]/best'
+        
         with yt_dlp.YoutubeDL(_base_opts(extractor_args, proxy, cookies)) as ydl:
             info = ydl.extract_info(url, download=False, process=False)
         sanitized = sanitize_filename(info.get('title', 'youtube_video'))
@@ -622,9 +628,9 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
         
         dl_opts = {
             **_base_opts(extractor_args, proxy, cookies),
-            'format': fmt,
+            'format': active_fmt,
             'outtmpl': os.path.join(output_dir, f'{sanitized}.%(ext)s'),
-            'merge_output_format': 'mp4' if has_ffmpeg else None,
+            'merge_output_format': 'mp4' if actual_ffmpeg else None,
             'overwrites': True,
             'ignoreerrors': False,
             'progress_hooks': [_progress_hook],
