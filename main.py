@@ -719,7 +719,6 @@ def upload_to_s3(file_path, bucket_name=None):
         print("⚠️ AWS_S3_BUCKET not configured. Skipping S3 upload.")
         return False
     try:
-        # boto3 automatically loads credentials from environment without violating test guardrails
         s3 = boto3.client('s3', region_name=os.environ.get("AWS_REGION", "ap-south-2"))
         file_name = os.path.basename(file_path)
         s3.upload_file(file_path, bucket, file_name)
@@ -998,18 +997,4 @@ def _run_worker_loop(i, clip, input_video, video_title, output_dir, output_forma
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="AutoCrop-Vertical with Viral Clip Detection.")
-    input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument('-i', '--input', type=str, help="Path to the input video file.")
-    input_group.add_argument('-u', '--url', type=str, help="YouTube URL to download and process.")
-    parser.add_argument('-o', '--output', type=str, help="Output directory or file.")
-    parser.add_argument('--format', type=str, default="auto", choices=["auto", "vertical", "horizontal", "square"])
-    args = parser.parse_args()
-
-    if args.url:
-        output_dir = args.output if (args.output and os.path.isdir(args.output)) else "."
-        input_video, video_title = download_youtube_video(args.url, output_dir)
-    else:
-        input_video = args.input
-        video_title = os.path.splitext(os.path.basename(input_video))[0]
-
-    print(f"Pipeline ready for processing: {video_title} at {input_video}")
+---
