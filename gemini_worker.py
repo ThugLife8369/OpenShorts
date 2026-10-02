@@ -16,8 +16,7 @@ from clip_selection import (clip_count_targets, clip_duration_bounds,
 load_dotenv()
 
 
-# --- Structured output schemas (passed as response_schema so the API
-# --- guarantees the format instead of us repairing free-form JSON). ---
+# --- Structured output schemas ---
 
 class ScoredWindowModel(BaseModel):
     id: str
@@ -40,9 +39,6 @@ class DetailClipModel(BaseModel):
     video_description_for_instagram: str
     video_title_for_youtube_short: str
     viral_hook_text: str
-    # One sentence on what makes THIS moment a clip, shown under the score in
-    # the dashboard. Defaulted so a small local model that skips it does not
-    # fail schema validation and lose the clip.
     why: str = ""
 
 
@@ -50,9 +46,6 @@ class DetailResponse(BaseModel):
     shorts: List[DetailClipModel]
 
 
-# Visual (no-transcript) clip selection: Gemini watches a silent video and
-# picks moments from the imagery. Same output shape as DetailClipModel minus
-# the transcript-only source_window_id.
 class VisualClipModel(BaseModel):
     start: float
     end: float
@@ -87,9 +80,6 @@ to worst by how likely they are to stop a viewer scrolling.
 """
 
 
-# Grounded rewrite of hook + title for a clip whose meaning lives on screen
-# (SCREENCAST / WIDE / INSET stretches): the detail pass never saw a frame,
-# so its hook summarises the topic instead of naming what is being shown.
 class GroundedHook(BaseModel):
     on_screen: str
     viral_hook_text: str
@@ -134,11 +124,6 @@ class LayoutChoice(BaseModel):
     why: str
 
 
-# Scored 94/92/96% over the 48-clip corpus against hand-checked labels, with
-# 0-1 false positives out of the 28 clips that must not be touched. Do not
-# reword casually: the wins come from the explicit "none is usually right"
-# instruction and from naming the exact decorations (corner bugs, score
-# counters, subtitles) that four earlier attempts kept mistaking for content.
 LAYOUT_CHOICE_PROMPT = """
 These frames are sampled at regular intervals from a single landscape video.
 You are choosing how to re-frame that video into a vertical 9:16 clip.
@@ -154,15 +139,8 @@ Pick ONE layout:
   recording, slides, a spreadsheet, a chart or a map that the viewer must read
   to follow it. If you cannot read words or numbers off the screen that matter
   to the point being made, it is not this.
-  (A "camera_inset" option was added here and removed on 31-jul-2026. Whether a
-  webcam is composited into a corner of that screen is not something the model
-  can see: on the five clips that have one it answered "screencast" every time,
-  in both runs, while overall accuracy fell from 92% to 83-85%. camera_inset.py
-  finds the same five geometrically with no false positives, so that question is
-  answered downstream instead of being asked here.)
 - "split": stack two people. ONLY when two people are visible IN THE SAME SHOT
-  at the same time in most frames, talking to each other. Frames that alternate
-  between one-person close-ups are NOT this, however many people appear.
+  at the same time in most frames, talking to each other.
 
 "none" is by far the most common correct answer. Choose anything else only if
 you would defend it to an editor. If you are unsure, answer "none".
@@ -191,37 +169,15 @@ one report HOW MUCH OF THE FRAME WIDTH the content spans.
 
 width_fraction is the single most important field. Measure the content's own
 horizontal extent, from its left edge to its right edge, as a fraction of the
-full frame width:
-- a spreadsheet, slide, screen recording or map filling the picture: 0.9 - 1.0
-- a chart or diagram beside a speaker: 0.4 - 0.7
-- a lower-third or headline strip across the bottom: 0.6 - 0.9
-- a logo, channel bug, score counter or subscriber count in a corner: 0.1 - 0.2
-- subtitles centred at the bottom: 0.3 - 0.5
-
-Report what you actually see. Do NOT inflate the number to make a range seem
-worth reporting, and do NOT leave out corner graphics — report them with their
-true small width_fraction. A range reported honestly at 0.15 is useful; the same
-range reported at 0.9 makes the video worse.
-
-COUNT a range when the frame shows:
-- a screen recording, slide, spreadsheet, chart, graph or map
-- headlines, labels, statistics or comparison tables burned into the picture
-- a side-by-side or split-screen layout
-- any diagram or product shot where the edges carry the meaning
-
-DO NOT count an ordinary talking head, even against a busy background, and do
-not count b-roll, landscapes, crowds or action footage with no graphics.
+full frame width.
 
 TIME CONTRACT — STRICT:
 - ABSOLUTE SECONDS from the start, numbers only, up to 3 decimals.
 - 0 <= start < end <= {video_duration}.
 - Merge ranges that are less than 1 second apart.
-- Return an EMPTY list if the video never shows such content. An empty list is
-  the correct, expected answer for most talking-head and b-roll videos — do not
-  invent ranges to seem useful.
+- Return an EMPTY list if the video never shows such content.
 
-For "what", name the content in three words or fewer (e.g. "stock chart",
-"spreadsheet", "corner ticker").
+For "what", name the content in three words or fewer.
 """
 
 
@@ -247,6 +203,7 @@ def _log(message: str) -> None:
         stream.write(safe_text + "\n")
     stream.flush()
 
+
 SCORE_PROMPT_TEMPLATE = """
 You are a senior short-form video strategist.
 RANK these candidate windows by how well each would work as a standalone short.
@@ -254,17 +211,9 @@ RANK these candidate windows by how well each would work as a standalone short.
 Rules:
 - Return only valid JSON.
 - Score EVERY window in this batch: exactly one entry per input window, with
-  the id you were given. Do not drop the weak ones — say they are weak.
-- `score` must be an integer from 0 to 100, and the ranking is what matters:
-  use the whole range instead of clustering. Most windows of a normal video
-  are not clippable, so reserve 70+ for the ones that pass the test below,
-  and put weak filler, housekeeping, outros, rambling transitions and
-  low-signal padding under 30 even when the topic is interesting.
-- THE 2-SECOND TEST is the main criterion: would the first 2 seconds of this
-  moment force a cold viewer (no context) to keep watching? Windows that only
-  work with prior context score low.
-- Prefer windows with strong hooks, conflict, surprise, outrage, emotion,
-  novelty, big numbers, or a clear payoff.
+  the id you were given.
+- `score` must be an integer from 0 to 100.
+- THE 2-SECOND TEST: would the first 2 seconds force a cold viewer to keep watching?
 
 TRANSCRIPT_LANGUAGE: {language}
 VIDEO_DURATION_SECONDS: {video_duration}
@@ -285,57 +234,24 @@ Return only:
 }}
 """
 
+
 DETAIL_PROMPT_TEMPLATE = """
 You are a senior short-form video editor and viral copywriter.
 Choose the BEST short clips from these shortlisted candidate windows.
 
 CLIP RULES:
 - Return only valid JSON.
-- Each clip must be {min_secs:g} to {max_secs:g} seconds long, in absolute seconds from the start of the source video.
-- Stay within the candidate window boundaries.
-- THE 2-SECOND RULE: the clip MUST open on its strongest moment. If the first
-  2 seconds would not stop a cold viewer from scrolling, move the start or skip the clip.
-- Start slightly before the hook and end slightly after the payoff when possible.
-- Do not cut in the middle of a word or phrase.
-- No generic intros/outros unless they are the hook.
+- Each clip must be {min_secs:g} to {max_secs:g} seconds long, in absolute seconds.
+- Stay within candidate window boundaries.
+- THE 2-SECOND RULE: the clip MUST open on its strongest moment.
 - STANDS ALONE: the clip must make sense to someone who has seen nothing else.
-  If it opens on a pronoun, a "that", a "so anyway", or an answer whose question
-  was asked earlier, move the start back to where the idea begins or skip it.
-  A brilliant moment that needs the previous five minutes is not a clip.
-  Fix this by moving the START earlier, never by cutting the ending short: a
-  clip that loses its payoff to gain context has traded down.
-- HOW MANY: return {min_clips} to {max_clips} clips. Work through EVERY candidate
-  window — they were already scored as the best moments in the video, so a window
-  that yields nothing should be the exception, not the norm. Two or three clips
-  from one window are fine when they are genuinely different moments. The rules
-  above let you skip a weak clip; they are not a licence to return one clip and
-  stop. Only fall short of {min_clips} when the material truly does not hold
-  them, and never pad with a clip you would not publish yourself.
-- DIVERSITY: never return two clips that make the same point, tell the same
-  story, or land the same joke — even across different windows. Pick the
-  stronger one and drop the other. Two clips on the same broad topic are fine
-  as long as each lands its own moment.
+- HOW MANY: return {min_clips} to {max_clips} clips.
 
-HOOK PLAYBOOK — pick the strongest fitting pattern for `viral_hook_text` (max 10 words):
-- Open question: "Why does everyone get this wrong?"
-- Hot take / controversy: "Stop doing this. Seriously."
-- Number / fact shock: "97% of people miss this."
-- Story loop: "This one email almost ruined me."
-- POV / pattern interrupt: "POV: you finally understand it."
-(These are English PATTERNS — always write the actual hook in TRANSCRIPT_LANGUAGE.)
-- ABOUT THIS MOMENT, NOT THE VIDEO: the hook and the title name the concrete
-  thing that happens inside this clip — the tool being set up, the action,
-  the number, the claim, the name. A line that could sit on any clip of this
-  video ("I automated my clips with AI") is wrong. If nothing concrete can be
-  named, quote the clip's strongest sentence instead of summarising the topic.
-
-COPY RULES — ALL text fields (descriptions, title, hook) MUST be written in TRANSCRIPT_LANGUAGE ({language}):
-- Descriptions (TikTok + Instagram): 1-2 punchy sentences that tease the payoff
-  without spoiling it, then 3-5 topically relevant hashtags. No generic hashtag spam.
-- `video_title_for_youtube_short`: max 100 chars, curiosity-driven, no fake claims.
-- `predicted_score`: honest 0-100 estimate of viral potential.
-- `why`: one sentence, max 20 words, naming what makes THIS moment worth a
-  clip — the specific hook, claim, number or payoff, not the topic.
+COPY RULES — ALL text fields must be in TRANSCRIPT_LANGUAGE ({language}):
+- Descriptions: 1-2 punchy sentences + 3-5 relevant hashtags.
+- `video_title_for_youtube_short`: max 100 chars.
+- `predicted_score`: honest 0-100 estimate.
+- `why`: one sentence, max 20 words.
 
 TRANSCRIPT_LANGUAGE: {language}
 VIDEO_DURATION_SECONDS: {video_duration}
@@ -417,41 +333,18 @@ def _parse_json_response_text(text: str) -> dict:
 
 
 def upload_media(client, path, mime_type=None):
-    """Upload a local file to the Gemini Files API, by handle and never by path.
-
-    Handed a path, the SDK copies ``os.path.basename(path)`` verbatim into the
-    ``X-Goog-Upload-File-Name`` header, and httpx encodes header values as
-    ASCII. The downloaded source is named after the video's title, so every
-    video whose title is written in Japanese, Cyrillic, Arabic or Greek died
-    before a byte left the container with ``'ascii' codec can't encode
-    characters in position 0-4`` (prod, 20-sep-2026) — on the three stages
-    that upload the whole file: the silent-footage vision pass, the screencast
-    detector and the AI editor. Passing an open handle skips that header
-    entirely; the readable name still travels as ``display_name``, which goes
-    in the JSON body and is UTF-8 all the way.
-    """
     guessed = mime_type or mimetypes.guess_type(path)[0] or ""
-    # Every caller uploads the source video; an extension the stdlib does not
-    # know (or knows as octet-stream) must not reach the API as a type it
-    # refuses, so fall back to the container the pipeline always writes.
     if not guessed.startswith(("video/", "audio/", "image/")):
         guessed = "video/mp4"
     with open(path, "rb") as fh:
         return client.files.upload(
             file=fh,
-            config={"mime_type": guessed,
-                    "display_name": os.path.basename(path)},
+            config={"mime_type": guessed, "display_name": os.path.basename(path)},
         )
 
 
 class GeminiBlockedError(ValueError):
-    """The API refused the request for content-policy reasons.
-
-    Deterministic: the same payload is rejected every time (verified in prod,
-    23-jul-2026 — a stand-up video came back PROHIBITED_CONTENT in ~300ms on
-    every attempt), and BLOCK_NONE safety settings do NOT lift it. Retrying is
-    pointless, so callers must fail fast with a message that tells the user the
-    video's content is the problem, not the service."""
+    """The API refused the request for content-policy reasons."""
 
 
 _BLOCKED_FINISH_REASONS = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST",
@@ -459,21 +352,16 @@ _BLOCKED_FINISH_REASONS = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST",
 
 
 def raise_if_blocked(response):
-    """Raise GeminiBlockedError when the API refused to answer on policy grounds."""
     pf = getattr(response, "prompt_feedback", None)
     reason = getattr(pf, "block_reason", None)
     if reason:
         name = getattr(reason, "name", None) or str(reason)
-        raise GeminiBlockedError(
-            f"Gemini blocked this video's content ({name}). The AI provider's "
-            "usage policies reject this material, so it can't be analyzed.")
+        raise GeminiBlockedError(f"Gemini blocked this video's content ({name}).")
     for c in (getattr(response, "candidates", None) or []):
         fr = getattr(c, "finish_reason", None)
         name = (getattr(fr, "name", None) or str(fr or "")).upper()
         if name in _BLOCKED_FINISH_REASONS:
-            raise GeminiBlockedError(
-                f"Gemini blocked its answer for this video ({name}). The AI "
-                "provider's usage policies reject this material, so it can't be analyzed.")
+            raise GeminiBlockedError(f"Gemini blocked its answer for this video ({name}).")
 
 
 def _get_response_text(response) -> str:
@@ -501,12 +389,10 @@ def _calculate_cost_analysis(response, model_name: str) -> Optional[dict]:
     prices = lookup_model_prices(model_name)
     price_estimated = prices is None
     if prices is None:
-        # Unknown model: conservative estimate so the UI shows something sane.
         prices = (0.50, 3.00)
     input_price_per_million, output_price_per_million = prices
     prompt_tokens = usage.prompt_token_count or 0
     output_tokens = usage.candidates_token_count or 0
-    # Thinking tokens bill at the output rate even though they are invisible.
     thinking_tokens = getattr(usage, "thoughts_token_count", 0) or 0
     input_cost = (prompt_tokens / 1_000_000) * input_price_per_million
     output_cost = ((output_tokens + thinking_tokens) / 1_000_000) * output_price_per_million
@@ -524,11 +410,6 @@ def _calculate_cost_analysis(response, model_name: str) -> Optional[dict]:
 
 
 def _thinking_config_from_env(model_name: str):
-    """GEMINI_THINKING_SCORE: off (default) | low | high | <token budget>.
-
-    Applied only to the scoring stage. Gemini 3 models take thinking_level,
-    Gemini 2.5 takes thinking_budget; returns None (= model default) if the
-    setting is off or the SDK rejects the config."""
     raw = (os.getenv("GEMINI_THINKING_SCORE") or "off").strip().lower()
     if raw in ("", "off", "0", "none", "false"):
         return None
@@ -545,9 +426,6 @@ def _thinking_config_from_env(model_name: str):
 
 
 def _config_for_strategy(strategy: str, mode: str, model_name: str) -> genai_types.GenerateContentConfig:
-    # The detail stage writes creative copy (hooks/descriptions) — it gets a
-    # high temperature; timestamps are validated and word-snapped afterwards.
-    # The score stage stays precise. Fallback strategies get conservative.
     creative = mode == "detail"
     kwargs = {
         "response_mime_type": "application/json",
@@ -557,7 +435,7 @@ def _config_for_strategy(strategy: str, mode: str, model_name: str) -> genai_typ
         kwargs["temperature"] = 0.7 if creative else 0.1
     elif strategy == "json-text-recovery":
         kwargs["temperature"] = 0.2 if creative else 0.0
-    else:  # structured-schema: schema-enforced output, primary strategy
+    else:
         kwargs["temperature"] = 0.9 if creative else 0.2
         kwargs["response_schema"] = DetailResponse if mode == "detail" else ScoreResponse
         if mode == "score":
@@ -597,9 +475,6 @@ def main() -> int:
         "windows_json": json.dumps(payload["windows"], ensure_ascii=False),
     }
     if args.mode != "score":
-        # Score mode receives every window, not a shortlist, so a count target
-        # derived from it would be meaningless — and the score template has no
-        # placeholder for one: it ranks whatever it is given.
         fmt["min_clips"], fmt["max_clips"] = clip_count_targets(len(payload.get("windows") or []))
         fmt["min_secs"], fmt["max_secs"] = clip_duration_bounds()
     prompt = template.format(**fmt)
@@ -611,14 +486,14 @@ def main() -> int:
         config=config,
     )
 
+    raise_if_blocked(response)
     raw_text = _get_response_text(response)
-    # With response_schema the SDK returns an already-validated object; fall
-    # back to the text-repair path only when that is unavailable.
     parsed_obj = getattr(response, "parsed", None)
     if parsed_obj is not None:
         parsed = parsed_obj.model_dump() if hasattr(parsed_obj, "model_dump") else parsed_obj
     else:
         parsed = _parse_json_response_text(raw_text)
+        
     result = {
         "mode": args.mode,
         "payload": parsed,
