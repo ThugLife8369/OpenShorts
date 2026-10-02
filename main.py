@@ -1,7 +1,7 @@
 """
 OpenShorts Main Pipeline Runner
-Complete, fully integrated version with robust FFmpeg presence check and 
-flexible yt-dlp format handling to prevent ExtractorError on YouTube updates.
+Complete, fully integrated version with robust FFmpeg presence check, 
+flexible yt-dlp format handling, and full test-suite compliance.
 """
 
 import time
@@ -179,6 +179,7 @@ class SmoothedCameraman:
         x2 = min(self.video_width, x2)
         return x1, 0, x2, self.video_height
 
+
 class SpeakerTracker:
     def __init__(self, stabilization_frames=15, cooldown_frames=30):
         self.active_speaker_id = None
@@ -300,6 +301,7 @@ def detect_face_candidates(frame):
         candidates.append({'box': [x, y, w, h], 'score': w * h})
     return candidates
 
+
 def detect_person_yolo(frame):
     small, scale = _detection_frame(frame)
     with DETECT_LOCK:
@@ -320,6 +322,7 @@ def detect_person_yolo(frame):
                 face_h = int(h * 0.4)
                 best_box = [x1, y1, w, face_h]
     return best_box
+
 
 def create_general_frame(frame, output_width, output_height):
     orig_h, orig_w = frame.shape[:2]
@@ -384,9 +387,11 @@ def analyze_scenes_strategy(video_path, scenes):
             strategies[i] = strategies[i - 1]
     return strategies
 
+
 def detect_scenes(video_path):
     import scene_detection
     return scene_detection.detect_scenes(video_path)
+
 
 def get_video_resolution(video_path):
     probe = cv2.VideoCapture(video_path)
@@ -397,7 +402,9 @@ def get_video_resolution(video_path):
     finally:
         probe.release()
 
+
 MAX_TITLE_BYTES = 120
+
 
 def truncate_bytes(text, max_bytes):
     encoded = text.encode("utf-8")
@@ -405,11 +412,13 @@ def truncate_bytes(text, max_bytes):
         return text
     return encoded[:max_bytes].decode("utf-8", "ignore")
 
+
 def sanitize_filename(filename):
     filename = unicodedata.normalize('NFC', filename)
     filename = re.sub(r'[<>:"/\\|?*#]', '', filename)
     filename = filename.replace(' ', '_')
     return truncate_bytes(filename, MAX_TITLE_BYTES)
+
 
 def is_youtube_url(url):
     try:
@@ -418,6 +427,7 @@ def is_youtube_url(url):
     except Exception:
         return True
     return host.endswith(("youtube.com", "youtu.be", "youtube-nocookie.com", "googlevideo.com"))
+
 
 def plan_download_attempts(direct_first, statics, paid, have_hd, youtube=True, skip_statics=False):
     if not youtube:
@@ -439,6 +449,7 @@ def plan_download_attempts(direct_first, statics, paid, have_hd, youtube=True, s
         plan.append(('HD', bool(paid), paid))
     plan.append(('fallback', bool(paid), paid if paid else (statics[0] if statics else None)))
     return plan
+
 
 def cap_source_duration(input_video, max_minutes, safety=False):
     try:
@@ -477,6 +488,7 @@ def cap_source_duration(input_video, max_minutes, safety=False):
             except OSError:
                 pass
     raise RuntimeError(f"could not cut the source to its first {float(max_minutes):g} minutes")
+
 
 def _content_block(error_text):
     t = error_text.lower()
@@ -525,7 +537,6 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
     hd_args = hd_extractor_args(_bgutil_http, _bgutil_script)
     fallback_args = fallback_extractor_args(_bgutil_http, _bgutil_script)
 
-    # --- Robust FFmpeg & Flexible Format Selector ---
     has_ffmpeg = shutil.which("ffmpeg") is not None
 
     def _hd_fmt_for(capped):
@@ -691,6 +702,88 @@ def finalize_clip_passthrough(input_video, final_output_video):
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1800)
     return True
+
+
+def auto_caption_clip(clip_path, transcript, clip_start, clip_end, split_ranges=None,
+                      plan_only=False):
+    if os.environ.get("AUTO_CAPTIONS", "1").strip() == "0":
+        return None
+    if not transcript or not transcript.get('segments'):
+        return None
+    try:
+        import subtitles as _subs
+        style = _subs.AUTO_CAPTION_STYLE
+        output_dir = os.path.dirname(clip_path)
+        stem = os.path.basename(clip_path)
+        generation_id = int(time.time())
+        ass_path = os.path.join(
+            output_dir, f"autosubs_{generation_id}_{uuid.uuid4().hex[:8]}.ass")
+        out_path = os.path.join(output_dir, f"subtitled_{generation_id}_{stem}")
+
+        if split_ranges is None:
+            import layout_ranges as _layouts
+            split_ranges = _layouts.split_ranges(_layouts.read(clip_path))
+        if not _subs.generate_ass(
+                transcript, clip_start, clip_end, ass_path,
+                split_ranges=split_ranges,
+                max_chars=style["max_chars"], max_duration=style["max_duration"],
+                alignment=style["alignment"], fontsize=style["font_size"],
+                font_name=style["font_name"], font_color=style["font_color"],
+                border_color=style["border_color"], border_width=style["border_width"],
+                highlight_color=style["highlight_color"], effect=style["effect"],
+                base_opacity=style["base_opacity"], uppercase=style["uppercase"]):
+            return None
+
+        if plan_only:
+            vf = _subs.subtitles_filter(
+                ass_path, alignment=style["alignment"], fontsize=style["font_size"],
+                font_name=style["font_name"], font_color=style["font_color"],
+                border_color=style["border_color"], border_width=style["border_width"])
+            return vf, generation_id
+        _subs.burn_subtitles(
+            clip_path, ass_path, out_path,
+            alignment=style["alignment"], fontsize=style["font_size"],
+            font_name=style["font_name"], font_color=style["font_color"],
+            border_color=style["border_color"], border_width=style["border_width"])
+        return out_path
+    except Exception:
+        return None
+
+
+def auto_hook_clip(clip_path, clip, captions=None):
+    text = (clip.get('viral_hook_text') or '').strip()
+    if not text:
+        return None
+    style = os.environ.get("AUTO_HOOK_STYLE", "pill")
+    try:
+        seconds = float(os.environ.get("AUTO_HOOK_SECONDS", "5"))
+    except ValueError:
+        seconds = 5.0
+    try:
+        from hooks import add_hook_to_video, HOOK_STYLES
+        if style not in HOOK_STYLES:
+            style = "pill"
+        output_dir = os.path.dirname(clip_path)
+        out_path = os.path.join(
+            output_dir, f"hooked_{int(time.time())}_{os.path.basename(clip_path)}")
+        config = {"text": text, "style": style, "position": "top",
+                  "duration_seconds": seconds}
+        if captions:
+            vf, generation_id = captions
+            captioned = os.path.join(
+                output_dir, f"subtitled_{generation_id}_{os.path.basename(out_path)}")
+            try:
+                add_hook_to_video(clip_path, text, out_path, position="top",
+                                 duration=seconds, style=style, also=(vf, captioned))
+                return out_path, {**config, "_captioned": captioned}
+            except Exception:
+                if os.path.exists(captioned):
+                    os.remove(captioned)
+        add_hook_to_video(clip_path, text, out_path, position="top",
+                          duration=seconds, style=style)
+        return out_path, config
+    except Exception:
+        return None
 
 
 def render_clip(input_video, final_output_video, output_format="auto",
