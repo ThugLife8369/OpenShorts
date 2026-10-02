@@ -1,6 +1,7 @@
 """
 OpenShorts Main Pipeline Runner
-Updated with robust FFmpeg fallback handling to prevent yt-dlp abort exit codes in remote containers.
+Complete, fully integrated version with robust FFmpeg presence check and 
+flexible yt-dlp format handling to prevent ExtractorError on YouTube updates.
 """
 
 import time
@@ -524,19 +525,19 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
     hd_args = hd_extractor_args(_bgutil_http, _bgutil_script)
     fallback_args = fallback_extractor_args(_bgutil_http, _bgutil_script)
 
-    # --- Robust FFmpeg Fallback Integration ---
+    # --- Robust FFmpeg & Flexible Format Selector ---
     has_ffmpeg = shutil.which("ffmpeg") is not None
 
     def _hd_fmt_for(capped):
         if not has_ffmpeg:
-            return 'best[ext=mp4]/best'
+            return 'best[ext=mp4]/best/bestvideo+bestaudio'
         if capped:
             return ('bestvideo[vcodec^=avc1][height<=720][ext=mp4]+bestaudio[ext=m4a]/'
                     'bestvideo[vcodec^=avc1][height<=720]+bestaudio/'
-                    'best[height<=720][ext=mp4]/best[height<=720]/best')
+                    'best[height<=720][ext=mp4]/best[height<=720]/best/bestvideo+bestaudio')
         return ('bestvideo[vcodec^=avc1][height<=1080][ext=mp4]+bestaudio[ext=m4a]/'
                 'bestvideo[vcodec^=avc1][height<=1080]+bestaudio/'
-                'best[height<=1080][ext=mp4]/best[ext=mp4]/best')
+                'best[height<=1080][ext=mp4]/best[height<=1080]/best/bestvideo+bestaudio')
 
     def _base_opts(extractor_args, proxy, cookies=True):
         return {
@@ -613,6 +614,7 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
             'outtmpl': os.path.join(output_dir, f'{sanitized}.%(ext)s'),
             'merge_output_format': 'mp4' if has_ffmpeg else None,
             'overwrites': True,
+            'ignoreerrors': False,
             'progress_hooks': [_progress_hook],
         }
         if ranged:
@@ -654,7 +656,7 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
             except Exception as e:
                 last_err = e
                 attempt_log.append({"label": label, "ok": False, "bytes": _dl_bytes["total"] + _dl_bytes["partial"], "paid": proxy is not None and proxy == _proxy, "error": str(e)[:300]})
-                retryable = '403' in str(e) or 'Forbidden' in str(e)
+                retryable = '403' in str(e) or 'Forbidden' in str(e) or 'Requested format is not available' in str(e)
                 if not retryable or retry == 1:
                     break
                 time.sleep(3)
