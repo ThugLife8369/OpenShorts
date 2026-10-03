@@ -139,7 +139,7 @@ Pick ONE layout:
   recording, slides, a spreadsheet, a chart or a map that the viewer must read
   to follow it. If you cannot read words or numbers off the screen that matter
   to the point being made, it is not this.
-- "split": stack two people. ONLY when two people are visible IN THE SAME SHOT
+- "split": stack two people. ONLY when two people are visible IN THE SHOT
   at the same time in most frames, talking to each other.
 
 "none" is by far the most common correct answer. Choose anything else only if
@@ -245,6 +245,7 @@ CLIP RULES:
 - Stay within candidate window boundaries.
 - THE 2-SECOND RULE: the clip MUST open on its strongest moment.
 - STANDS ALONE: the clip must make sense to someone who has seen nothing else.
+- ABOUT THIS MOMENT, NOT THE VIDEO: focus the hook and description specifically on this highlight.
 - HOW MANY: return {min_clips} to {max_clips} clips.
 
 COPY RULES — ALL text fields must be in TRANSCRIPT_LANGUAGE ({language}):
