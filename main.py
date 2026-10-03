@@ -419,9 +419,11 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
 
     _proxy = os.environ.get("PROXY_URL", "").strip() or None
 
+    _bgutil_http = os.environ.get("BGUTIL_BASE_URL", "").strip() or None
+    _bgutil_script = os.environ.get("BGUTIL_SCRIPT_PATH", "").strip() or None
     from yt_clients import hd_extractor_args, fallback_extractor_args
-    hd_args = hd_extractor_args()
-    fallback_args = fallback_extractor_args()
+    hd_args = hd_extractor_args(_bgutil_http, _bgutil_script)
+    fallback_args = fallback_extractor_args(_bgutil_http, _bgutil_script)
 
     def _base_opts(extractor_args, proxy, cookies=True):
         return {
@@ -597,7 +599,8 @@ if __name__ == '__main__':
             success = render_clip(clip_final_path, clip_final_path, args.format)
             if success:
                 captioned = auto_caption_clip(clip_final_path, transcript, start, end)
-                served = captioned or clip_final_path
+                deliver_path = clip_final_path
+                served = captioned or deliver_path
                 upload_to_s3(served)
                 print(f"CLIP_READY {i} {os.path.basename(served)}")
         except Exception as e:
