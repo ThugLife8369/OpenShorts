@@ -583,7 +583,7 @@ if __name__ == '__main__':
     duration = transcript.get('duration', 60.0)
     clips = gemini_worker.get_viral_clips(transcript, duration) if hasattr(gemini_worker, 'get_viral_clips') else []
     if not clips:
-        print("⚠️ No clips returned by Gemini. Falling back to default scene window.")
+        print("⚠️️ No clips returned by Gemini. Falling back to default scene window.")
         clips = [{"start": 0.0, "end": min(duration, 30.0), "viral_hook_text": "Watch this! 🤯"}]
 
     # 3. Process each clip through the worker loop (cuts, reframes, captions, and uploads to S3)
@@ -601,6 +601,7 @@ if __name__ == '__main__':
                 captioned = auto_caption_clip(clip_final_path, transcript, start, end)
                 deliver_path = clip_final_path
                 served = captioned or deliver_path
+                served = mark_delivery(served)
                 upload_to_s3(served)
                 print(f"CLIP_READY {i} {os.path.basename(served)}")
         except Exception as e:
