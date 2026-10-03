@@ -433,7 +433,7 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
             'proxy': proxy, 'socket_timeout': 30, 'retries': 10, 'fragment_retries': 10,
             'nocheckcertificate': True, 'cachedir': False,
             'noplaylist': True,
-            'extractor_args': extractor_args,
+            'extractor_args': extractor_args if extractor_args is not None else {},
             'js_runtimes': {'node': {}},
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
