@@ -42,6 +42,7 @@ from clip_selection import (build_transcript_windows, clip_count_targets,
                             snap_clip_to_words, trim_to_best)
 from ffmpeg_utils import (video_encode_args, audio_encode_args, cut_clip, QUALITY,
                          QUALITY_FAST, METADATA_SCRUB)
+from watermarked import mark_delivery
 from dotenv import load_dotenv
 import json
 
@@ -601,6 +602,7 @@ if __name__ == '__main__':
                 captioned = auto_caption_clip(clip_final_path, transcript, start, end)
                 deliver_path = clip_final_path
                 served = captioned or deliver_path
+                served = mark_delivery(served)
                 upload_to_s3(served)
                 print(f"CLIP_READY {i} {os.path.basename(served)}")
         except Exception as e:
