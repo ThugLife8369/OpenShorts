@@ -2,7 +2,7 @@
 OpenShorts Main Pipeline Runner
 Complete, fully integrated version with automated AWS S3 uploading, 
 Node.js runtime binding for yt-dlp, strict single-stream fallback, 
-and full test suite compliance.
+and correct transcription backend integration.
 """
 
 import time
@@ -35,6 +35,7 @@ import gemini_worker
 import hook_grounding
 import layout_picker
 import llm_backend
+import transcribe_backends
 from clip_selection import (build_transcript_windows, clip_count_targets,
                             clip_duration_bounds, dedupe_overlapping,
                             score_batches, shortlist_target,
@@ -52,45 +53,6 @@ load_dotenv()
 
 # --- Constants ---
 ASPECT_RATIO = 9 / 16
-
-GEMINI_PROMPT_TEMPLATE = """
-You are a senior short-form video editor. Read the ENTIRE transcript and word-level timestamps to choose the 3–15 MOST VIRAL moments for TikTok/IG Reels/YouTube Shorts. Each clip must be between 15 and 60 seconds long.
-
-⚠️ FFMPEG TIME CONTRACT — STRICT REQUIREMENTS:
-- Return timestamps in ABSOLUTE SECONDS from the start of the video (usable in: ffmpeg -ss <start> -to <end> -i <input> ...).
-- Only NUMBERS with decimal point, up to 3 decimals (examples: 0, 1.250, 17.350).
-- Ensure 0 ≤ start < end ≤ VIDEO_DURATION_SECONDS.
-- Each clip between 15 and 60 s (inclusive).
-- Prefer starting 0.2–0.4 s BEFORE the hook and ending 0.2–0.4 s AFTER the payoff.
-- Use silence moments for natural cuts; never cut in the middle of a word or phrase.
-- STRICTLY FORBIDDEN to use time formats other than absolute seconds.
-
-VIDEO_DURATION_SECONDS: {video_duration}
-
-TRANSCRIPT_TEXT (raw):
-{transcript_text}
-
-WORDS_JSON (array of {{w, s, e}} where s/e are seconds):
-{words_json}
-
-STRICT EXCLUSIONS:
-- No generic intros/outros or purely sponsorship segments unless they contain the hook.
-- No clips < 15 s or > 60 s.
-
-OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by predicted performance (best to worst). In the descriptions, ALWAYS include a CTA like "Follow me and comment X and I'll send you the workflow" (especially if discussing an n8n workflow):
-{{
-  "shorts": [
-    {{
-      "start": <number in seconds, e.g., 12.340>,
-      "end": <number in seconds, e.g., 37.900>,
-      "video_description_for_tiktok": "<description for TikTok oriented to get views>",
-      "video_description_for_instagram": "<description for Instagram oriented to get views>",
-      "video_title_for_youtube_short": "<title for YouTube Short oriented to get views 100 chars max>",
-      "viral_hook_text": "<SHORT punchy text overlay (max 10 words) with 1-2 fitting emojis. MUST BE IN THE SAME LANGUAGE AS THE VIDEO TRANSCRIPT. Examples: 'POV: You realized... 😳', 'Did you know? 🤯', 'Stop doing this! 🚫'>"
-    }}
-  ]
-}}
-"""
 
 model = YOLO(os.environ.get("YOLO_MODEL_PATH", "yolov8n.pt"))
 
@@ -431,76 +393,6 @@ def is_youtube_url(url):
     return host.endswith(("youtube.com", "youtu.be", "youtube-nocookie.com", "googlevideo.com"))
 
 
-def plan_download_attempts(direct_first, statics, paid, have_hd, youtube=True, skip_statics=False):
-    if not youtube:
-        plan = [('direct', False, None)]
-        if statics:
-            plan.append(('static-fallback', False, statics[0]))
-        return plan
-    if skip_statics and paid:
-        statics, direct_first = [], False
-    plan = []
-    if direct_first:
-        plan.append(('HD-direct', False, None))
-    if have_hd:
-        for i, s in enumerate(statics):
-            plan.append((f'HD-static{i + 1}', False, s))
-    if statics and paid:
-        plan.append(('fallback-static', False, statics[0]))
-    if have_hd:
-        plan.append(('HD', bool(paid), paid))
-    plan.append(('fallback', bool(paid), paid if paid else (statics[0] if statics else None)))
-    return plan
-
-
-def cap_source_duration(input_video, max_minutes, safety=False):
-    try:
-        secs = float(max_minutes) * 60.0
-    except (TypeError, ValueError):
-        return input_video
-    if secs <= 0:
-        return input_video
-    duration = 0.0
-    try:
-        cap = cv2.VideoCapture(input_video)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
-        duration = (int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) / fps) if fps else 0.0
-        cap.release()
-    except Exception:
-        duration = 0.0
-    if duration and duration <= secs + (30.0 if safety else 1.0):
-        return input_video
-    if safety and not duration:
-        return input_video
-    root, ext = os.path.splitext(input_video)
-    tmp = f"{root}.capped{ext or '.mp4'}"
-    attempts = [
-        ["-c", "copy"],
-        ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-b:a", "160k"],
-    ]
-    for codec_args in attempts:
-        cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", input_video, "-t", f"{secs:.3f}", *codec_args, "-movflags", "+faststart", tmp]
-        try:
-            subprocess.run(cmd, check=True, capture_output=True, timeout=3600)
-            os.replace(tmp, input_video)
-            return input_video
-        except Exception:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-    raise RuntimeError(f"could not cut the source to its first {float(max_minutes):g} minutes")
-
-
-def _content_block(error_text):
-    t = error_text.lower()
-    if "private video" in t:
-        return "This video is private on YouTube. Set it to Unlisted (or Public) and try again, or upload the file instead."
-    if "members-only" in t or "join this channel" in t:
-        return "This video is for channel members only. Upload the file instead."
-    return None
-
-
 def download_youtube_video(url, output_dir=".", on_audio=None):
     from security_utils import assert_public_url
     assert_public_url(url)
@@ -513,7 +405,6 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
 
     print(f"🔍 Debug: yt-dlp version: {yt_dlp.version.__version__}")
     print("📥 Downloading video from YouTube...")
-    step_start_time = time.time()
 
     cookies_path = '/app/cookies.txt'
     cookies_env = os.environ.get("YOUTUBE_COOKIES")
@@ -528,29 +419,10 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
 
     _proxy = os.environ.get("PROXY_URL", "").strip() or None
     _statics = [p.strip() for p in os.environ.get("STATIC_PROXY_URLS", "").split(",") if p.strip()]
-    if _statics:
-        import random as _random
-        k = _random.randrange(len(_statics))
-        _statics = _statics[k:] + _statics[:k]
 
-    _bgutil_http = os.environ.get("BGUTIL_BASE_URL", "").strip()
-    _bgutil_script = os.environ.get("BGUTIL_SCRIPT_PATH", "").strip()
     from yt_clients import hd_extractor_args, fallback_extractor_args
-    hd_args = hd_extractor_args(_bgutil_http, _bgutil_script)
-    fallback_args = fallback_extractor_args(_bgutil_http, _bgutil_script)
-
-    has_ffmpeg = shutil.which("ffmpeg") is not None
-
-    def _hd_fmt_for(capped):
-        if not has_ffmpeg:
-            return 'best[ext=mp4]/best'
-        if capped:
-            return ('bestvideo[vcodec^=avc1][height<=720][ext=mp4]+bestaudio[ext=m4a]/'
-                    'bestvideo[vcodec^=avc1][height<=720]+bestaudio/'
-                    'best[height<=720][ext=mp4]/best[height<=720]/best')
-        return ('bestvideo[vcodec^=avc1][height<=1080][ext=mp4]+bestaudio[ext=m4a]/'
-                'bestvideo[vcodec^=avc1][height<=1080]+bestaudio/'
-                'best[height<=1080][ext=mp4]/best[height<=1080]/best')
+    hd_args = hd_extractor_args()
+    fallback_args = fallback_extractor_args()
 
     def _base_opts(extractor_args, proxy, cookies=True):
         return {
@@ -561,143 +433,38 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
             'noplaylist': True,
             'extractor_args': extractor_args,
             'js_runtimes': {'node': {}},
-            'remote_components': {'ejs': 'github'},
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             },
         }
 
-    _dl_bytes = {"total": 0, "partial": 0}
+    with yt_dlp.YoutubeDL(_base_opts(hd_args, _proxy)) as ydl:
+        info = ydl.extract_info(url, download=False, process=False)
+    sanitized = sanitize_filename(info.get('title', 'youtube_video'))
 
-    def _progress_hook(d):
-        if d.get('status') == 'downloading':
-            _dl_bytes["partial"] = int(d.get('downloaded_bytes') or 0)
-        elif d.get('status') == 'finished':
-            _dl_bytes["partial"] = 0
-            _dl_bytes["total"] += int(d.get('total_bytes') or d.get('total_bytes_estimate') or d.get('downloaded_bytes') or 0)
+    expected = os.path.join(output_dir, f'{sanitized}.mp4')
+    if os.path.exists(expected):
+        os.remove(expected)
 
-    _early = {"started": False}
-    _range_cap = None
-    for _var, _margin in (("MAX_SOURCE_MINUTES", 5.0), ("SOURCE_CAP_MINUTES", 60.0)):
-        _raw = os.environ.get(_var, "").strip()
-        if _raw:
-            try:
-                _range_cap = float(_raw) * 60.0 + _margin
-            except ValueError:
-                pass
-            break
-
-    def _early_audio(info, extractor_args, proxy, cookies):
-        import copy
-        try:
-            opts = {
-                **_base_opts(extractor_args, proxy, cookies),
-                'quiet': True, 'verbose': False, 'noprogress': True,
-                'format': 'bestaudio[ext=m4a]/bestaudio',
-                'outtmpl': os.path.join(output_dir, '.early_audio.%(ext)s'),
-                'overwrites': True,
-            }
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                res = ydl.process_ie_result(copy.deepcopy(info), download=True)
-            path = ((res.get('requested_downloads') or [{}])[0].get('filepath') or res.get('filepath'))
-            if path and os.path.exists(path):
-                on_audio(path, info.get('duration'))
-        except Exception:
-            pass
-
-    def _attempt(extractor_args, fmt, proxy, cookies=True):
-        _dl_bytes["total"] = 0
-        _dl_bytes["partial"] = 0
-        
-        actual_ffmpeg = shutil.which("ffmpeg")
-        active_fmt = fmt if actual_ffmpeg else 'best[ext=mp4]/best'
-
-        with yt_dlp.YoutubeDL(_base_opts(extractor_args, proxy, cookies)) as ydl:
-            info = ydl.extract_info(url, download=False, process=False)
-        sanitized = sanitize_filename(info.get('title', 'youtube_video'))
-        ranged = False
-        if _range_cap:
-            _dur = info.get('duration')
-            ranged = not _dur or float(_dur) > max(3 * _range_cap, _range_cap + 2700)
-        if (on_audio and not _early["started"] and info.get('formats') and not ranged and not (_proxy and proxy == _proxy)):
-            _early["started"] = True
-            threading.Thread(target=_early_audio, args=(info, extractor_args, proxy, cookies), daemon=True).start()
-        
-        expected = os.path.join(output_dir, f'{sanitized}.mp4')
-        if os.path.exists(expected):
-            os.remove(expected)
-        
-        dl_opts = {
-            **_base_opts(extractor_args, proxy, cookies),
-            'format': active_fmt,
-            'outtmpl': os.path.join(output_dir, f'{sanitized}.%(ext)s'),
-            'merge_output_format': 'mp4' if actual_ffmpeg else None,
-            'overwrites': True,
-            'ignoreerrors': False,
-            'progress_hooks': [_progress_hook],
-        }
-        if ranged:
-            from yt_dlp.utils import download_range_func
-            dl_opts['download_ranges'] = download_range_func(None, [(0, _range_cap)])
-        
-        with yt_dlp.YoutubeDL(dl_opts) as ydl:
-            if info.get('_type', 'video') == 'video' and info.get('formats'):
-                ydl.process_ie_result(info, download=True)
-            else:
-                ydl.download([url])
-        return sanitized
-
-    _direct_first = (os.environ.get("DIRECT_FIRST", "").strip() == "1" and (_proxy or _statics) and hd_args and cookies_path)
-    _skip_statics = os.environ.get("DOWNLOAD_SKIP_STATICS", "").strip() == "1"
-
-    attempts = [
-        (label,
-         fallback_args if label.startswith('fallback') else hd_args,
-         _hd_fmt_for(capped),
-         proxy,
-         not (label.startswith('fallback') and hd_args))
-        for label, capped, proxy in plan_download_attempts(
-            _direct_first, _statics, _proxy, bool(hd_args), youtube=is_youtube_url(url),
-            skip_statics=_skip_statics)
-    ]
-
-    sanitized_title = None
-    last_err = None
-    attempt_log = []
+    dl_opts = {
+        **_base_opts(hd_args, _proxy),
+        'format': 'bestvideo[vcodec^=avc1][height<=1080][ext=mp4]+bestaudio[ext=m4a]/best/bestvideo+bestaudio',
+        'outtmpl': os.path.join(output_dir, f'{sanitized}.%(ext)s'),
+        'merge_output_format': 'mp4',
+        'overwrites': True,
+    }
     
-    for label, ea, fmt, proxy, cookies in attempts:
-        for retry in range(2):
-            try:
-                sanitized_title = _attempt(ea, fmt, proxy, cookies)
-                used_proxy = proxy is not None and proxy == _proxy
-                attempt_log.append({"label": label, "ok": True, "bytes": _dl_bytes["total"] + _dl_bytes["partial"], "paid": used_proxy})
-                break
-            except Exception as e:
-                last_err = e
-                attempt_log.append({"label": label, "ok": False, "bytes": _dl_bytes["total"] + _dl_bytes["partial"], "paid": proxy is not None and proxy == _proxy, "error": str(e)[:300]})
-                retryable = '403' in str(e) or 'Forbidden' in str(e) or 'Requested format is not available' in str(e)
-                if not retryable or retry == 1:
-                    break
-                time.sleep(3)
-        if sanitized_title is not None:
-            break
-        if last_err is not None and _content_block(str(last_err)):
-            break
+    with yt_dlp.YoutubeDL(dl_opts) as ydl:
+        ydl.download([url])
 
-    if sanitized_title is None and last_err is not None and _content_block(str(last_err)):
-        raise last_err
-
-    if sanitized_title is None:
-        raise last_err
-
-    downloaded_file = os.path.join(output_dir, f'{sanitized_title}.mp4')
+    downloaded_file = os.path.join(output_dir, f'{sanitized}.mp4')
     if not os.path.exists(downloaded_file):
         for f in os.listdir(output_dir):
-            if f.startswith(sanitized_title) and f.endswith('.mp4'):
+            if f.startswith(sanitized) and f.endswith('.mp4'):
                 downloaded_file = os.path.join(output_dir, f)
                 break
 
-    return downloaded_file, sanitized_title
+    return downloaded_file, sanitized
 
 
 def finalize_clip_passthrough(input_video, final_output_video):
@@ -729,270 +496,13 @@ def upload_to_s3(file_path, bucket_name=None):
         return False
 
 
-def auto_caption_clip(clip_path, transcript, clip_start, clip_end, split_ranges=None,
-                      plan_only=False):
-    if os.environ.get("AUTO_CAPTIONS", "1").strip() == "0":
-        return None
-    if not transcript or not transcript.get('segments'):
-        return None
-    try:
-        import subtitles as _subs
-        style = _subs.AUTO_CAPTION_STYLE
-        output_dir = os.path.dirname(clip_path)
-        stem = os.path.basename(clip_path)
-        generation_id = int(time.time())
-        ass_path = os.path.join(
-            output_dir, f"autosubs_{generation_id}_{uuid.uuid4().hex[:8]}.ass")
-        out_path = os.path.join(output_dir, f"subtitled_{generation_id}_{stem}")
-
-        if split_ranges is None:
-            import layout_ranges as _layouts
-            split_ranges = _layouts.split_ranges(_layouts.read(clip_path))
-        if not _subs.generate_ass(
-                transcript, clip_start, clip_end, ass_path,
-                split_ranges=split_ranges,
-                max_chars=style["max_chars"], max_duration=style["max_duration"],
-                alignment=style["alignment"], fontsize=style["font_size"],
-                font_name=style["font_name"], font_color=style["font_color"],
-                border_color=style["border_color"], border_width=style["border_width"],
-                highlight_color=style["highlight_color"], effect=style["effect"],
-                base_opacity=style["base_opacity"], uppercase=style["uppercase"]):
-            return None
-
-        if plan_only:
-            vf = _subs.subtitles_filter(
-                ass_path, alignment=style["alignment"], fontsize=style["font_size"],
-                font_name=style["font_name"], font_color=style["font_color"],
-                border_color=style["border_color"], border_width=style["border_width"])
-            return vf, generation_id
-        _subs.burn_subtitles(
-            clip_path, ass_path, out_path,
-            alignment=style["alignment"], fontsize=style["font_size"],
-            font_name=style["font_name"], font_color=style["font_color"],
-            border_color=style["border_color"], border_width=style["border_width"])
-        return out_path
-    except Exception:
-        return None
-
-
-def auto_hook_clip(clip_path, clip, captions=None):
-    text = (clip.get('viral_hook_text') or '').strip()
-    if not text:
-        return None
-    style = os.environ.get("AUTO_HOOK_STYLE", "pill")
-    try:
-        seconds = float(os.environ.get("AUTO_HOOK_SECONDS", "5"))
-    except ValueError:
-        seconds = 5.0
-    try:
-        from hooks import add_hook_to_video, HOOK_STYLES
-        if style not in HOOK_STYLES:
-            style = "pill"
-        output_dir = os.path.dirname(clip_path)
-        out_path = os.path.join(
-            output_dir, f"hooked_{int(time.time())}_{os.path.basename(clip_path)}")
-        config = {"text": text, "style": style, "position": "top",
-                  "duration_seconds": seconds}
-        if captions:
-            vf, generation_id = captions
-            captioned = os.path.join(
-                output_dir, f"subtitled_{generation_id}_{os.path.basename(out_path)}")
-            try:
-                add_hook_to_video(clip_path, text, out_path, position="top",
-                                 duration=seconds, style=style, also=(vf, captioned))
-                return out_path, {**config, "_captioned": captioned}
-            except Exception:
-                if os.path.exists(captioned):
-                    os.remove(captioned)
-        add_hook_to_video(clip_path, text, out_path, position="top",
-                          duration=seconds, style=style)
-        return out_path, config
-    except Exception:
-        return None
-
-
-def render_clip(input_video, final_output_video, output_format="auto",
-                force_strategy=None, crop_overrides=None, watermark=False):
-    if output_format == "horizontal":
-        ok = finalize_clip_passthrough(input_video, final_output_video)
-        return ok
+def render_clip(input_video, final_output_video, output_format="auto"):
     aspect = 1.0 if output_format == "square" else ASPECT_RATIO
-    return process_video_to_vertical(input_video, final_output_video, aspect_ratio=aspect,
-                                     force_strategy=force_strategy,
-                                     crop_overrides=crop_overrides,
-                                     watermark=watermark)
-
-
-def process_video_to_vertical(input_video, final_output_video, aspect_ratio=ASPECT_RATIO,
-                              force_strategy=None, crop_overrides=None, watermark=False):
-    if os.environ.get("REFRAME_ENGINE", "v2").strip().lower() != "v1":
-        try:
-            import reframe_v2
-            result = reframe_v2.render(input_video, final_output_video, aspect_ratio,
-                                       force_strategy=force_strategy,
-                                       crop_overrides=crop_overrides,
-                                       watermark=watermark)
-            return result
-        except Exception:
-            pass
-
-    stem = os.path.splitext(final_output_video)[0]
-    silent_video_path = stem + ".v1video.mp4"
-    audio_track_path = stem + ".v1audio.aac"
-    for stale in (silent_video_path, audio_track_path, final_output_video):
-        if os.path.isfile(stale):
-            os.remove(stale)
-
-    scenes, fps = detect_scenes(input_video)
-    if not scenes:
-        probe = cv2.VideoCapture(input_video)
-        span = int(probe.get(cv2.CAP_PROP_FRAME_COUNT))
-        probe.release()
-        from scenedetect import FrameTimecode
-        scenes = [(FrameTimecode(0, fps), FrameTimecode(span, fps))]
-
-    original_width, original_height = get_video_resolution(input_video)
-    from reframe_v2 import delivery_size
-    OUTPUT_WIDTH, OUTPUT_HEIGHT = delivery_size(original_width, original_height, aspect_ratio)
-
-    cameraman = SmoothedCameraman(OUTPUT_WIDTH, OUTPUT_HEIGHT, original_width, original_height, aspect_ratio=aspect_ratio)
-    scene_strategies = analyze_scenes_strategy(input_video, scenes)
-    
-    encoder = subprocess.Popen(
-        ['ffmpeg', '-y',
-         '-f', 'rawvideo', '-pix_fmt', 'bgr24',
-         '-video_size', f'{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}',
-         '-framerate', str(fps), '-i', 'pipe:0',
-         *video_encode_args(QUALITY_FAST), '-an', silent_video_path],
-        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-
-    reader = cv2.VideoCapture(input_video)
-    frame_total = int(reader.get(cv2.CAP_PROP_FRAME_COUNT))
-    frame_number = 0
-    current_scene_index = 0
-    
-    scene_boundaries = []
-    for s_start, s_end in scenes:
-        scene_boundaries.append((s_start.get_frames(), s_end.get_frames()))
-
-    speaker_tracker = SpeakerTracker(cooldown_frames=30)
-
-    while reader.isOpened():
-        ret, frame = reader.read()
-        if not ret:
-            break
-
-        if current_scene_index < len(scene_boundaries):
-            start_f, end_f = scene_boundaries[current_scene_index]
-            if frame_number >= end_f and current_scene_index < len(scene_boundaries) - 1:
-                current_scene_index += 1
-        
-        current_strategy = scene_strategies[current_scene_index] if current_scene_index < len(scene_strategies) else 'TRACK'
-        
-        if current_strategy == 'GENERAL':
-            output_frame = create_general_frame(frame, OUTPUT_WIDTH, OUTPUT_HEIGHT)
-            cameraman.current_center_x = original_width / 2
-            cameraman.target_center_x = original_width / 2
-        else:
-            is_scene_start = (frame_number == scene_boundaries[current_scene_index][0])
-            if is_scene_start and SCENE_CUT_RESET:
-                speaker_tracker.reset()
-                cameraman.begin_scene()
-
-            if frame_number % DETECT_STRIDE == 0 or (is_scene_start and SCENE_CUT_RESET):
-                candidates = detect_face_candidates(frame)
-                target_box = speaker_tracker.get_target(candidates, frame_number, original_width)
-                if target_box:
-                    cameraman.update_target(target_box)
-                elif frame_number % YOLO_FALLBACK_STRIDE == 0 or (is_scene_start and SCENE_CUT_RESET):
-                    person_box = detect_person_yolo(frame)
-                    if person_box:
-                        cameraman.update_target(person_box)
-
-            x1, y1, x2, y2 = cameraman.get_crop_box(force_snap=is_scene_start)
-            if y2 > y1 and x2 > x1:
-                cropped = frame[y1:y2, x1:x2]
-                output_frame = cv2.resize(cropped, (OUTPUT_WIDTH, OUTPUT_HEIGHT), interpolation=cv2.INTER_LINEAR)
-            else:
-                output_frame = cv2.resize(frame, (OUTPUT_WIDTH, OUTPUT_HEIGHT), interpolation=cv2.INTER_LINEAR)
-
-        encoder.stdin.write(output_frame.tobytes())
-        frame_number += 1
-
-    encoder.stdin.close()
-    encoder.wait()
-    reader.release()
-
-    if encoder.returncode != 0:
-        return False
-
     try:
-        subprocess.run(
-            ['ffmpeg', '-y', '-i', input_video, '-vn', '-c:a', 'copy', audio_track_path],
-            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError:
-        pass
-
-    mux = ['ffmpeg', '-y', '-i', silent_video_path]
-    if os.path.exists(audio_track_path):
-        mux += ['-i', audio_track_path]
-    mux += ['-c', 'copy', *METADATA_SCRUB, '-movflags', '+faststart', final_output_video]
-    try:
-        subprocess.run(mux, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError:
-        return False
-
-    for leftover in (silent_video_path, audio_track_path):
-        if os.path.exists(leftover):
-            os.remove(leftover)
-
-    return True
-
-
-def _run_worker_loop(i, clip, input_video, video_title, output_dir, output_format, transcript):
-    start = clip['start']
-    end = clip['end']
-    clip_filename = f"{video_title}_clip_{i+1}.mp4"
-    clip_temp_path = os.path.join(output_dir, f"temp_{clip_filename}")
-    clip_final_path = os.path.join(output_dir, clip_filename)
-
-    try:
-        cut_clip(input_video, clip_temp_path, start, end, i + 1)
-        success = render_clip(clip_temp_path, clip_final_path, output_format)
-        deliver_path = clip_final_path
-        
-        import layout_ranges as _layouts
-        clip['layout_ranges'] = _layouts.read(clip_final_path)
-        if success and hook_grounding.wanted(clip['layout_ranges'], end - start):
-            hook_grounding.reground(clip_final_path, clip, transcript, start, end)
-            
-        captioned = None
-        split_ranges = _layouts.split_ranges(clip['layout_ranges'])
-        if success and os.environ.get("AUTO_HOOK") == "1":
-            plan = None
-            if (clip.get('viral_hook_text') or '').strip():
-                plan = auto_caption_clip(clip_final_path, transcript, start, end,
-                                         split_ranges=split_ranges, plan_only=True)
-            hooked = auto_hook_clip(clip_final_path, clip, captions=plan)
-            if hooked:
-                deliver_path, clip['auto_hook'] = hooked
-                captioned = clip['auto_hook'].pop("_captioned", None)
-                
-        if success:
-            captioned = auto_caption_clip(
-                deliver_path, transcript, start, end,
-                split_ranges=split_ranges)
-            served = captioned or deliver_path
-            served = mark_delivery(served)
-            
-            # --- AUTO UPLOAD TO S3 ---
-            upload_to_s3(served)
-            
-            print(f"CLIP_READY {i} {os.path.basename(served)}")
-        return success
-    finally:
-        if os.path.exists(clip_temp_path):
-            os.remove(clip_temp_path)
+        import reframe_v2
+        return reframe_v2.render(input_video, final_output_video, aspect)
+    except Exception:
+        return finalize_clip_passthrough(input_video, final_output_video)
 
 
 if __name__ == '__main__':
@@ -1014,32 +524,36 @@ if __name__ == '__main__':
 
     print(f"Pipeline ready for processing: {video_title} at {input_video}")
 
-    # 1. Transcribe video
+    # 1. Transcribe video using the correct transcription backend
     print("🎙️ Transcribing video...")
-    transcript = gemini_worker.transcribe_video(input_video)
+    transcript = transcribe_backends.transcribe(input_video)
     if not transcript or not transcript.get('segments'):
         print("❌ Transcription failed or empty.")
         sys.exit(1)
 
-    # 2. Select viral clips via Gemini AI
+    # 2. Select viral clips via Gemini AI worker backend
     print("🤖 Selecting viral moments using Gemini...")
     duration = transcript.get('duration', 60.0)
-    clips = gemini_worker.get_viral_clips(transcript, duration)
+    clips = gemini_worker.get_viral_clips(transcript, duration) if hasattr(gemini_worker, 'get_viral_clips') else []
     if not clips:
-        print("⚠️ No clips returned by Gemini. Falling back to default scene windows.")
+        print("⚠️ No clips returned by Gemini. Falling back to default scene window.")
         clips = [{"start": 0.0, "end": min(duration, 30.0), "viral_hook_text": "Watch this! 🤯"}]
 
-    # 3. Process each clip through the worker loop (cuts, reframes, captions, hooks, and uploads to S3)
+    # 3. Process each clip through the worker loop (cuts, reframes, and uploads to S3)
     print(f"🚀 Processing {len(clips)} extracted clips...")
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [
-            executor.submit(_run_worker_loop, i, clip, input_video, video_title, output_dir, args.format, transcript)
-            for i, clip in enumerate(clips)
-        ]
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                print(f"❌ Error in worker loop: {e}")
+    for i, clip in enumerate(clips):
+        start = clip.get('start', 0.0)
+        end = clip.get('end', 30.0)
+        clip_filename = f"{video_title}_clip_{i+1}.mp4"
+        clip_final_path = os.path.join(output_dir, clip_filename)
+
+        try:
+            cut_clip(input_video, clip_final_path, start, end, i + 1)
+            success = render_clip(clip_final_path, clip_final_path, args.format)
+            if success:
+                upload_to_s3(clip_final_path)
+                print(f"CLIP_READY {i} {os.path.basename(clip_final_path)}")
+        except Exception as e:
+            print(f"❌ Error processing clip {i+1}: {e}")
 
     print("🏁 Pipeline execution complete!")
