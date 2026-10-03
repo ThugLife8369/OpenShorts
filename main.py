@@ -2,7 +2,7 @@
 OpenShorts Main Pipeline Runner
 Complete, fully integrated version with automated AWS S3 uploading, 
 Node.js runtime binding for yt-dlp, strict single-stream fallback, 
-and correct transcription backend integration.
+and correct argument bindings.
 """
 
 import time
@@ -418,11 +418,12 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
         cookies_path = None
 
     _proxy = os.environ.get("PROXY_URL", "").strip() or None
-    _statics = [p.strip() for p in os.environ.get("STATIC_PROXY_URLS", "").split(",") if p.strip()]
 
+    _bgutil_http = os.environ.get("BGUTIL_BASE_URL", "").strip()
+    _bgutil_script = os.environ.get("BGUTIL_SCRIPT_PATH", "").strip()
     from yt_clients import hd_extractor_args, fallback_extractor_args
-    hd_args = hd_extractor_args()
-    fallback_args = fallback_extractor_args()
+    hd_args = hd_extractor_args(_bgutil_http, _bgutil_script)
+    fallback_args = fallback_extractor_args(_bgutil_http, _bgutil_script)
 
     def _base_opts(extractor_args, proxy, cookies=True):
         return {
