@@ -1,14 +1,17 @@
 name: Cloud Automated Short-Form Pipeline
 
 on:
-  schedule:
-    - cron: '0 8 * * *' # Runs daily on GitHub's cloud servers
-  workflow_dispatch: # Allows manual trigger anytime from GitHub UI
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: 'YouTube Podcast / Interview URL to Process'
+        required: false
+        default: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        type: string
 
 jobs:
   run-pipeline:
-    runs-on: ubuntu-latest
-
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -19,13 +22,11 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      # --- REQUIRED: Node.js runtime for yt-dlp YouTube signature challenges ---
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # --- REQUIRED: Native FFmpeg installation for media merging ---
       - name: Install FFmpeg natively
         run: |
           sudo apt-get update
@@ -38,14 +39,13 @@ jobs:
 
       - name: Execute Pipeline via Cloud Runner
         run: |
-          if [ -f "main.py" ]; then
-            python main.py -u "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-          elif [ -f "OpenShorts/main.py" ]; then
-            python OpenShorts/main.py -u "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-          else
-            python main.py -u "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+          # Use user-provided input if available, else fall back to default
+          TARGET_URL="${{ github.event.inputs.youtube_url }}"
+          if [ -z "$TARGET_URL" ]; then
+            TARGET_URL="https://www.youtube.com/watch?v=dQw4w9WgXcQ"
           fi
-        working-directory: .
+          
+          python main.py -u "$TARGET_URL" --format auto
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -54,16 +54,13 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_REGION: 'ap-south-2'
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AUTO_CAPTIONS: '1'
+          AUTO_HOOK: '1'
 
-      - name: Inspect Runner Disk Files
-        run: |
-          echo "Listing files in workspace directory:"
-          ls -la
-
-      - name: Upload Generated Clips as Artifacts
+      - name: Upload Generated Short Clips Artifact
         uses: actions/upload-artifact@v4
         with:
           name: generated-short-clips
-          path: |
-            *.mp4
+          path: '*.mp4'
+          if-no-files-found: warn
