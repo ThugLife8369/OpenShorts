@@ -407,7 +407,7 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
     print(f"🔍 Debug: yt-dlp version: {yt_dlp.version.__version__}")
     print("📥 Downloading video from YouTube...")
 
-    cookies_path = '/app/cookies.txt'
+    cookies_path = os.path.join(output_dir, 'cookies.txt')
     cookies_env = os.environ.get("YOUTUBE_COOKIES")
     if cookies_env:
         try:
@@ -416,7 +416,10 @@ def download_youtube_video(url, output_dir=".", on_audio=None):
         except Exception:
             cookies_path = None
     else:
-        cookies_path = None
+        if os.path.exists('cookies.txt'):
+            cookies_path = 'cookies.txt'
+        else:
+            cookies_path = None
 
     _proxy = os.environ.get("PROXY_URL", "").strip() or None
 
