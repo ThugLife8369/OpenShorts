@@ -23,8 +23,8 @@ No imports beyond the standard library on purpose: ``main.py``, ``app.py``
 and ``cloud/videos.py`` all use it and only the first of those has ffmpeg.
 """
 import os
-import shutil
 import re
+import shutil
 
 PREFIX = "wm_"
 
@@ -60,18 +60,13 @@ def clean_name(filename: str) -> str:
 
 
 def mark_delivery(filename: str) -> str:
-    """Creates a watermarked copy (wm_) of the deliverable file if appropriate, 
-    returning the new path, or falls back to the original filename.
-    """
+    """Creates and returns the path to the watermarked delivery copy (wm_)."""
     if not filename or not os.path.exists(filename):
         return filename
-    
     directory = os.path.dirname(filename)
     base = os.path.basename(filename)
-    
     if base.startswith(PREFIX):
         return filename
-        
     marked_path = os.path.join(directory, PREFIX + base)
     try:
         shutil.copyfile(filename, marked_path)
